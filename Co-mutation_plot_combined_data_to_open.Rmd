@@ -1,0 +1,638 @@
+---
+title: "Co-mutation plot combined data"
+author: "Yuta Ito"
+date: "2020/11/11"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(error = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+
+##########
+knitr::opts_chunk$set(root.dir = rprojroot::find_rstudio_root_file())
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+##########
+```
+
+```{r load library}
+library(tidyverse)
+library(readxl)
+
+library(ComplexHeatmap)
+library(circlize)
+```
+
+```{r make a timestamp and directories for result}
+# PDF
+tst <- "2022-11-09"
+outdir_pdf <- str_glue("result/pdf/combined_analysis_heatmap/{tst}")
+dir.create(outdir_pdf, recursive = TRUE, showWarnings = FALSE)
+
+# table
+outdir_table <- str_glue("result/table/combined_analysis_heatmap/{tst}")
+dir.create(outdir_table, recursive = TRUE, showWarnings = FALSE)
+```
+
+```{r samples}
+# read sample list
+df_all_sample_list <- read_excel("../../sample/sample_list/sample_list_20200716.xlsx",
+                                 sheet = 1, 
+                                 col_names = TRUE)
+df_all_sample_list %>% head
+
+# only fresh frozen samples
+df_sample_list <- df_all_sample_list 
+sample_id <- df_sample_list %>% 
+  filter(target != "no") %>%  
+  pull(target)
+
+sample_id
+
+# sample number
+length(sample_id)
+No_ENKTL_cases <- 168
+
+# pre-defined gene and path list
+df_gene_order <- read_tsv("../../data/driver_inspection/Driver_genes_with_arm_cna_20220401.txt",
+                          na = "NA",
+                          col_types = cols(
+                            union_q_dndscv = col_double(),
+                            q_gistic = col_double())) %>%
+  arrange(group)
+
+df_gene_order
+
+driver_gene <- df_gene_order$gene
+driver_gene
+
+```
+
+```{r modify the matrix}
+## data load
+# load matrix for main heatmap
+df <- read_tsv("./result/table/combined_analysis/2022-03-29/matrix_for_heatmap_with_arm_168_2022-03-29.txt")
+df %>% head
+
+## sorted matrix
+mat.sort <- as.matrix(df[-1]) 
+rownames(mat.sort) <- df$gene
+mat.sort %>% dim()
+mat.sort[1:10, 1:10]
+
+mat_rev <- mat.sort
+
+for (i in seq_along(df_gene_order$gene)) {
+  # i=3
+  if (df_gene_order[i,]$group %% 2 == 0) {
+    gene_i <- df_gene_order$gene[i]
+    mat_i <- mat_rev[gene_i, ]
+    mat_i[mat_i == 0] <- 0
+    mat_rev[gene_i, ] <- mat_i
+  } else if (df_gene_order[i,]$group %% 2 == 1) {
+    gene_i <- df_gene_order$gene[i]
+    mat_i <- mat_rev[gene_i, ]
+    mat_i[mat_i == 0] <- 20
+    mat_rev[gene_i, ] <- mat_i
+  }
+}
+
+mat_rev[1:20, 1:20]
+
+mat_rev %>% view()
+mat_rev %>% 
+  as_tibble(rownames = "gene") %>% 
+  write_tsv(str_glue("{outdir_table}/modified_matrix_for_heatmap_{tst}.txt"))
+
+```
+
+
+```{r annotation and legend}
+##prepare legend
+df_sex_info <- df_sample_list %>% 
+  filter(target != "no") %>% 
+  select(target, sex)
+  
+vec_sex_info <- df_sex_info %>% deframe()
+
+vec_sex_info[colnames(mat_rev)] %>% length()
+# annotation for sex as a top row
+# mat⇒mat_rev
+col_sex <- c("M" = "steelblue4", "no" = "gray85", "F" = "orange")
+ha_sex <-  HeatmapAnnotation(Sex = vec_sex_info[colnames(mat_rev)],
+                             col = list(Sex = col_sex),
+                             annotation_name_side = "left",
+                             gp = gpar(col = "white"),
+                             # height = unit(10, "mm"),
+                             show_legend = FALSE)
+                             # annotation_legend_param = list(
+                             #   direction = "horizontal",
+                             #   title = "Sex",
+                             #   title_position = "lefttop"
+                             # ))
+
+# institution-------------------------------------------------------------------
+df_inst <- df_sample_list %>% 
+  filter(target != "no") %>% 
+  select(target, institute) %>% 
+  mutate(institute = if_else(institute == "France",
+                              "France",
+                              "Japan"))
+df_inst
+
+vec_inst <- df_inst %>% deframe()
+vec_inst[colnames(mat_rev)] %>% length()
+
+# institution color
+labels_inst = c("France",
+                "Japan")
+
+col_inst = c("firebrick1",
+             "steelblue1")
+
+df_col_inst <- tibble(
+  labels_inst,
+  col_inst) 
+
+vec_col_inst <- df_col_inst %>% deframe
+vec_col_inst
+
+# source-------------------------------------------------------------------
+df_source <- df_sample_list %>% 
+  filter(target != "no") %>% 
+  select(target, status) 
+df_source %>% view()
+
+vec_source <- df_source %>% deframe()
+vec_source[colnames(mat_rev)] %>% length()
+
+# color
+labels_source = c("Frozen",
+                "FFPE")
+
+col_source = c("darkblue",
+               "forestgreen")
+
+df_col_source <- tibble(
+  labels_source,
+  col_source) 
+
+vec_col_source <- df_col_source %>% deframe
+vec_col_source
+
+lgd_source <- Legend(labels = labels_source,
+                     legend_gp = gpar(fill = vec_col_source), 
+                     title = "Types of specimens",
+                     ncol = 2,
+                     border = TRUE)
+draw(lgd_source)
+
+# genome sequence-------------------------------------------------------------------
+df_dna_seq <- df_sample_list %>% 
+  filter(target != "no") %>% 
+  mutate(dna_seq = if_else(wes != "no",
+                           "both",
+                           "target")) %>% 
+  select(target,
+         dna_seq) 
+
+vec_dna_seq <- df_dna_seq %>% deframe()
+
+# color
+labels_dna_seq = c("both",
+                   "target")
+
+col_dna_seq = c("steelblue1",
+                "orange")
+
+df_col_dna_seq <- tibble(
+  labels_dna_seq,
+  col_dna_seq) 
+
+vec_col_dna_seq <- df_col_dna_seq %>% deframe
+vec_col_dna_seq
+
+lgd_dna <- Legend(labels = labels_dna_seq,
+                  legend_gp = gpar(fill = vec_col_dna_seq), 
+                  title = "Experimental platform",
+                  ncol = 2,
+                  border = TRUE)
+draw(lgd_dna)
+
+# rna sequence-------------------------------------------------------------------
+df_rna_seq <- df_sample_list %>% 
+  filter(target != "no") %>% 
+  mutate(rna_seq = if_else(rna != "no",
+                           "rna",
+                           "no")) %>% 
+  select(target,
+         rna_seq) 
+
+vec_rna_seq <- df_rna_seq %>% deframe()
+
+# color
+labels_rna_seq = c("rna",
+                   "no")
+
+col_rna_seq = c("violetred4",
+                "grey75")
+
+df_col_rna_seq <- tibble(
+  labels_rna_seq,
+  col_rna_seq) 
+
+vec_col_rna_seq <- df_col_rna_seq %>% deframe
+vec_col_rna_seq
+
+lgd_rna <- Legend(labels = labels_rna_seq,
+                  legend_gp = gpar(fill = vec_col_rna_seq), 
+                  # title = "Experimental platform",
+                  ncol = 2,
+                  border = TRUE)
+draw(lgd_rna)
+#########################################################################
+
+# EBV ploidy-------------------------------------------------------------
+# load ebv data
+df_ebv_qc <- read_csv("../ebv_analysis/result/table/2022-04-05/summary_table_ebv_depth_and_reads.csv")
+df_ebv_qc_anot <- df_ebv_qc %>% select(id, log_avg_depth_ratio)
+df_ebv_qc_anot
+
+# data
+df_ebv <- df_sample_list %>% 
+  filter(target != "no") %>% 
+  select(target, ebv_bait) %>% 
+  left_join(df_ebv_qc_anot %>% rename(target = id)) 
+  # mutate(log_avg_depth_ratio_10cap = if_else(log_avg_depth_ratio >= 10,
+  #                                            10,
+  #                                            log_avg_depth_ratio))
+
+df_ebv
+
+vec_ebv_ploidy <- df_ebv %>% 
+  select(target, log_avg_depth_ratio) %>% 
+  deframe()
+
+## range::0-15
+summary(df_ebv_qc_anot$log_avg_depth_ratio)
+
+# color 
+col_fun_ebv = colorRamp2(c(0,5), c("white", "red"))
+
+# q value--------------------------------------------------------------------------
+df_gene_q <- df_gene_order %>% 
+  select(gene, union_q_dndscv, q_gistic) %>% 
+  mutate(minus_log_dndscv = -log10(union_q_dndscv),
+         minus_log_gistic = -log10(q_gistic)) %>% 
+  mutate(minus_log_dndscv2 = case_when(
+    minus_log_dndscv < -log10(0.25) ~ 0,
+    minus_log_dndscv > 5 ~ 5,
+    TRUE ~ minus_log_dndscv)) %>% 
+  mutate(minus_log_gistic2 = case_when(
+    minus_log_gistic < -log10(0.25) ~ 0,
+    minus_log_gistic > 5 ~ 5,
+    TRUE ~ minus_log_gistic)) 
+  
+
+df_gene_q %>% view
+
+df_gene_q$minus_log_dndscv %>% boxplot()
+df_gene_q$minus_log_gistic %>% boxplot()
+
+col_fun = colorRamp2(c(0, -log10(0.25), -log10(0.25) + 0.0001, 5), 
+                     c("white", "black", "pink", "red"))
+
+ha_q_value = HeatmapAnnotation(q_dndscv = df_gene_q$minus_log_dndscv2,
+                               q_gistic = df_gene_q$minus_log_gistic2,
+                               col = list(q_dndscv = col_fun,
+                                          q_gistic = col_fun),
+                               na_col = "grey75",
+                               which = "row",
+                               show_annotation_name = FALSE,
+                               simple_anno_size_adjust = TRUE, 
+                               annotation_width = unit(c(8,8), "mm"),
+                               show_legend = FALSE,
+                               # border = TRUE,
+                               gp = gpar(col = "white", lwd = 0.5))
+
+ha_q_value
+
+
+# specify the color ------------------------------------------
+df_col_alt <- tibble(
+  col_num = c(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 15, 16, 20),
+  col_alt = c("grey98",
+              "steelblue3",
+              "firebrick1",
+              "yellow1",
+              "darkgoldenrod1",
+              "lightgoldenrod1",
+              "violet",
+              "chartreuse3",
+              "firebrick3",
+              "steelblue4",
+              "red",
+              "blue",
+              "gray95")
+)
+
+vec_col_alt <- df_col_alt %>% deframe()
+vec_col_alt
+
+## 
+df_anot <-  enframe(vec_inst) %>%
+  rename(Institution = value) %>% 
+  left_join(enframe(vec_sex_info)) %>% 
+  rename(Sex = value) %>% 
+  left_join(enframe(vec_source)) %>%
+  rename(Source = value) %>% 
+  left_join(enframe(vec_dna_seq)) %>%
+  rename(Genome_seq = value) %>% 
+  left_join(enframe(vec_rna_seq)) %>%
+  rename(RNA_seq = value) %>%
+  left_join(enframe(vec_ebv_ploidy)) %>% 
+  rename(`EBV ploidy` = value) %>% 
+  mutate(name = factor(name, levels = colnames(mat_rev))) %>% 
+  arrange(name)
+
+df_anot
+
+mat_anot <- df_anot[-1] %>% as.matrix()
+mat_anot
+rownames(mat_anot) <- df_anot$name
+mat_anot
+
+dat_anot <- mat_anot %>% as_data_frame()
+
+## top annotation
+# annotationを並列にしたい時にはひとまとめのobjectを作成する必要がある---------------------
+ha_combined_sex_inst_ebv <- HeatmapAnnotation(Institution = vec_inst[colnames(mat_rev)] %>% unname(),
+                                              Sex = vec_sex_info[colnames(mat_rev)] %>% unname(),
+                                              Source = vec_source[colnames(mat_rev)] %>% unname(),
+                                              Genome_seq = vec_dna_seq[colnames(mat_rev)] %>% unname(),
+                                              RNA_seq = vec_rna_seq[colnames(mat_rev)] %>% unname(),
+                                              `EBV ploidy` = vec_ebv_ploidy[colnames(mat_rev)],
+                                              col = list(Sex = col_sex,
+                                                         Institution = vec_col_inst,
+                                                         `EBV ploidy` = col_fun_ebv,
+                                                         Source = vec_col_source,
+                                                         Genome_seq = vec_col_dna_seq,
+                                                         RNA_seq = vec_col_rna_seq),
+                                              annotation_name_side = "left",
+                                              na_col = "grey75",
+                                              gp = gpar(col = "white", lwd = 0.5),
+                                              # gap = gpar(col = "white", lwd = 0.5),
+                                              # border = TRUE,
+                                              simple_anno_size_adjust = TRUE,
+                                              show_legend = FALSE,
+                                              annotation_height = unit(c(2, 2, 2, 2, 2, 2), "mm"))
+
+
+ha_combined_sex_inst_ebv
+# annotation for barplot; freq of altered genes----------------------------------------------
+mat_freq <- mat_rev
+
+# convert 20 to 0
+mat_freq[mat_freq == 20] <- 0
+
+mat_freq[mat_freq >= 1] <- 1
+mat_freq[1:10, 1:10]
+
+# altration freq
+vec_freq <- rowSums(mat_freq[driver_gene,]) / No_ENKTL_cases
+vec_freq
+vec_freq["oriP"] <- 8 / 128
+vec_freq["BART1"] <- 22 / 128
+vec_freq["BART2"] <- 19 / 128
+
+ha_freq = HeatmapAnnotation(`Percentage(%)` = anno_barplot(vec_freq,
+                                                           border = FALSE,
+                                                           ylim = c(0, 0.3)
+                                                           ),
+                            gp = gpar(fill = "grey85"),
+                            which = "row",
+                            show_annotation_name = FALSE,
+                            width = unit(0.5, "cm")
+                            )
+
+
+ha_freq
+
+ha_combined_q_freq2 <- HeatmapAnnotation(q_dndscv = df_gene_q$minus_log_dndscv2,
+                                         q_gistic = df_gene_q$minus_log_gistic2,
+                                         `Percentage(%)` = anno_barplot(vec_freq,
+                                                                        border = FALSE,
+                                                                        ylim = c(0, 0.3),
+                                                                        gp = gpar(col = "white", 
+                                                                                  fill = "grey20")),
+                                         
+                                         col = list(q_dndscv = col_fun,
+                                                    q_gistic = col_fun),
+                                         na_col = "grey75",
+                                         which = "row",
+                                         show_annotation_name = FALSE,
+                                         # width = unit(2.5, "cm"),
+                                         show_legend = FALSE,
+                                         simple_anno_size_adjust = TRUE,
+                                         annotation_width = unit(c(2.5, 2.5, 10), "mm"),
+                                         gp = gpar(col = "white", lwd = 0.5),
+                                         border = FALSE
+)
+
+
+col_fun(df_gene_q$minus_log_dndscv2)
+
+
+# legend
+# lgd_alt <- Legend(labels = vec_leg_alt, 
+#                   title = "Type of alterations",
+#                   title_position = "topcenter",
+#                   nrow = 2)
+
+
+#for legend---------------------------------------------------------------------
+df_leg_alt <- tibble(
+  leg_col = c(1, 2, 3, 4, 5, 6, 7, 8, 9, 15, 16),
+  labels = c("Nonsynonymous SNV",
+             "Framshift indel",
+             "Non-frameshift indel",
+             "Stop gain",
+             "Stop loss",
+             "Splice site",
+             "Multiple",
+             "Activating SV/CNA",
+             "Disrupting SV/CNA",
+             "Gain",
+             "Loss"
+             )
+  )
+
+vec_leg_alt <- df_leg_alt %>% deframe()
+vec_leg_alt
+
+
+df_col_alt_leg <- tibble(
+  col_num = c(1, 2, 3, 4, 5, 6, 7, 8, 9, 15, 16),
+  col_alt = c("steelblue3",
+               "firebrick1",
+               "yellow1",
+               "darkgoldenrod1",
+               "lightgoldenrod1",
+               "violet",
+               "chartreuse3",
+               "firebrick3",
+               "steelblue4",
+               "red",
+               "blue")
+  )
+
+vec_col_alt_leg <- df_col_alt_leg %>% deframe()
+vec_col_alt_leg
+
+
+lgd_alt_type <- Legend(at = seq(1, 9),
+                       labels = vec_leg_alt,
+                       legend_gp = gpar(fill = vec_col_alt_leg), 
+                       title = "Type of alterations",
+                       ncol = 3,
+                       border = TRUE)
+
+# draw(lgd_alt_type)
+
+# legend for sex-----------------------------------------------------------------------
+df_col_sex_leg <- tibble(
+  num = c(1, 2, 3),
+  col = c("blue", "red", "gray85")
+)
+
+vec_col_sex_leg <- df_col_sex_leg %>% deframe()
+
+
+df_sex_leg <- tibble(
+  num = c(1, 2, 3),
+  sex = c("M", "F", "Not available")
+)
+
+vec_sex_leg <- df_sex_leg %>% deframe()
+
+
+lgd_sex <- Legend(at = seq(1, 3),
+                  labels = vec_sex_leg,
+                  legend_gp = gpar(fill = vec_col_sex_leg), 
+                  title = "Sex",
+                  ncol = 3,
+                  border = TRUE)
+
+draw(lgd_sex)
+
+# legend for institution-----------------------------------------------------------------
+df_inst_leg <- tibble(
+  num = c(1, 2),
+  inst = c("France", "Japan")
+)
+
+
+vec_inst_leg <- df_inst_leg %>% deframe()
+
+df_col_inst_leg <- tibble(
+  num = c(1, 2),
+  col = c("firebrick1", "steelblue1")
+)
+
+vec_col_inst_leg <- df_col_inst_leg %>% deframe
+
+lgd_inst <- Legend(at = seq(1, 2),
+                   labels = vec_inst_leg,
+                   legend_gp = gpar(fill = vec_col_inst_leg), 
+                   title = "Institution",
+                   # ncol = 4,
+                   border = TRUE)
+
+draw(lgd_inst)
+
+lgd_all <- packLegend(lgd_alt_type, 
+                      lgd_sex,
+                      lgd_dna,
+                      lgd_rna,
+                      lgd_source,
+                      # lgd_pdl1,
+                      direction = "horizontal") 
+
+#legend q-------------------------------------------------------------------------
+lgd_q_value = Legend(col_fun = col_fun,
+                     title = "q_value",
+                     border = "black")
+draw(lgd_q_value)
+
+
+
+# legend for EBV ploidy----------------------------------------------------------------
+lgd_ebv_ploidy = Legend(col_fun = col_fun_ebv, 
+                        title = "EBV ploidy",
+                        border = "black")
+draw(lgd_ebv_ploidy)
+
+```
+
+```{r draw heatmap and preserve}
+# main heatmap
+hm <- Heatmap(mat_rev[df_gene_order$gene,],
+              col = vec_col_alt,
+              rect_gp = gpar(col = "white", lwd = 0.5),
+              show_row_names = TRUE,
+              show_column_names = FALSE,
+              show_heatmap_legend = FALSE,
+              column_order = colnames(mat_rev),
+              row_order = df_gene_order$gene,
+              row_names_side = "left",
+              # top_annotation = ha_sex,
+              top_annotation = ha_combined_sex_inst_ebv,
+              # right_annotation = ha_q_value,
+              right_annotation = ha_combined_q_freq2,
+              heatmap_width = unit(16, "cm"),
+              heatmap_height = unit(14, "cm"),
+              na_col = "grey75")
+
+
+hm
+
+draw(hm)
+
+
+#output
+pdf(str_glue("{outdir_pdf}/complexheatmap_combined_analysis_size_default_invert_{No_ENKTL_cases}samples.pdf"))
+draw(hm)
+dev.off()
+
+
+#legend
+pdf(str_glue("{outdir_pdf}/legend_alt_sex_complexheatmap_combined_analysis_test_default_{No_ENKTL_cases}samples.pdf"))
+draw(lgd_all)
+dev.off()
+
+#inst
+pdf(str_glue("{outdir_pdf}/legend_inst_complexheatmap_combined_analysis_test_default_{No_ENKTL_cases}samples.pdf"))
+draw(lgd_inst)
+dev.off()
+
+#qvalue
+pdf(str_glue("{outdir_pdf}/legend_q_value_complexheatmap_combined_analysis_test_default_{No_ENKTL_cases}samples.pdf"))
+draw(lgd_q_value)
+dev.off()
+
+#ebv ploidy
+pdf(str_glue("{outdir_pdf}/legend_ebv_ploidy_complexheatmap_combined_analysis_test_default_{No_ENKTL_cases}samples.pdf"))
+draw(lgd_ebv_ploidy)
+dev.off()
+```
+
+
+```{r}
+sessionInfo()
+```
+
